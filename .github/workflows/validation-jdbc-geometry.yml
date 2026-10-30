@@ -18,7 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: 8fec3a8d11c28cf486cdad275c17a6136617e76a
+          ref: 837cf9075879471e9fca2bb2344649e3861b4d6f
           persist-credentials: false
       - name: Free disk space
         uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be
