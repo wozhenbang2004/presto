@@ -1,0 +1,80 @@
+name: JDBC geometry runtime validation
+
+on:
+  push:
+    branches: ['validation/jdbc-geospatial-runtime']
+
+permissions:
+  contents: read
+
+jobs:
+  geometry:
+    name: ${{ matrix.mode }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - mode: baseline
+            ref: bb08766d68930620ceb9d63a564276d2220ca830
+          - mode: fixed
+            ref: aff0c0ea049c7dc6e4d989e198cbb5b16cf0cfb1
+    env:
+      CONTINUOUS_INTEGRATION: true
+      MAVEN_OPTS: -Xmx2G -XX:+ExitOnOutOfMemoryError
+      GEOMETRY_MODE: ${{ matrix.mode }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ matrix.ref }}
+          persist-credentials: false
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be
+        with:
+          docker-images: false
+          swap-storage: false
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+      - name: Download Node.js to Maven cache
+        run: .github/bin/download_nodejs
+      - name: Build product-test distribution
+        run: >-
+          ./mvnw install -B -V --quiet -T 1C -DskipTests
+          -Dair.check.skip-all --no-transfer-progress
+          -Dmaven.javadoc.skip=true -am
+          -pl '!presto-docs,!presto-spark-package,!presto-spark-launcher,!presto-spark-testing,!presto-test-coverage'
+      - name: Inspect packaged connector runtime dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          geometry_mysql_jar=$(find presto-server/target -type f -path '*/plugin/mysql/presto-geospatial-toolkit-*.jar' -print -quit)
+          geometry_postgresql_jar=$(find presto-server/target -type f -path '*/plugin/postgresql/presto-geospatial-toolkit-*.jar' -print -quit)
+          printf 'mode=%s mysql=%s postgresql=%s\n' "$GEOMETRY_MODE" "$geometry_mysql_jar" "$geometry_postgresql_jar"
+          if [ "$GEOMETRY_MODE" = fixed ]; then
+            test -n "$geometry_mysql_jar"
+            test -n "$geometry_postgresql_jar"
+          else
+            test -z "$geometry_mysql_jar"
+          fi
+      - name: Run geometry product regression
+        shell: bash
+        env:
+          OVERRIDE_JDK_DIR: ${{ env.JAVA_HOME }}
+        run: |
+          set -euo pipefail
+          set +e
+          presto-product-tests/bin/run_on_docker.sh singlenode-mysql -t com.facebook.presto.tests.mysql.TestMySqlGeometry.testReadGeometry 2>&1 | tee geometry-product-test.log
+          geometry_status=${PIPESTATUS[0]}
+          set -e
+          printf 'mode=%s product_test_exit=%s\n' "$GEOMETRY_MODE" "$geometry_status"
+          if [ "$GEOMETRY_MODE" = baseline ]; then
+            test "$geometry_status" -ne 0
+            grep -E 'NoClassDefFoundError|ClassNotFoundException' geometry-product-test.log
+            grep -E 'EsriGeometrySerde|JtsGeometrySerde|com/facebook/presto/geospatial' geometry-product-test.log
+          else
+            test "$geometry_status" -eq 0
+          fi
